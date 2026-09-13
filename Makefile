@@ -36,11 +36,7 @@ ONDEWO_T2S_VERSION=6.6.0
 # Submodule pins - `make checkout_defined_submodule_versions` checks out exactly these.
 # Pin the API to `tags/<api version>` before cutting a release; a branch is for development only.
 ONDEWO_T2S_API_GIT_BRANCH=tags/6.6.0
-# PROVISIONAL PIN. The six compiled-language targets this client depends on landed on the
-# branch below; ondewo-proto-compiler 5.15.0 is not tagged yet. Once that release is cut this
-# becomes tags/5.15.0 - `make release_update_proto_compiler_dependency_<lang>` in the compiler
-# repo rewrites it, so do not hand-edit it then.
-ONDEWO_PROTO_COMPILER_GIT_BRANCH=feature/rust-php-go-cpp-java-csharp
+ONDEWO_PROTO_COMPILER_GIT_BRANCH=tags/5.15.0
 
 # Submodule directories - these MUST match the paths in .gitmodules
 ONDEWO_T2S_API_DIR=ondewo-t2s-api
