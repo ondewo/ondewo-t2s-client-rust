@@ -43,7 +43,7 @@ or declare it in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ondewo-t2s-client = "0.1"
+ondewo-t2s-client = "6.6"
 tonic = "0.14"
 tokio = { version = "1", features = ["full"] }
 ```
@@ -106,8 +106,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ├── src
 │   ├── api                   <----- GENERATED - one <proto.package>.rs per package + mod.rs
 │   │   ├── mod.rs
-│   │   └── ondewo.t2s.rs
+│   │   ├── ondewo.t2s.rs
+│   │   └── ondewo.t2s.tonic.rs
+│   ├── auth.rs               <----- hand-written bearer-token interceptor
 │   └── lib.rs                <----- hand-written crate barrel
+├── examples
+│   └── authenticated_client.rs   <----- the crate's usage snippet, compiled by `cargo test`
+├── tests                     <----- integration tests over the generated stubs
+│   ├── auth_interceptor.rs
+│   ├── generated_grpc.rs
+│   └── generated_messages.rs
 ├── Cargo.toml                <----- crate manifest AND the generator's crate template
 ├── Cargo.lock
 ├── Makefile
@@ -150,14 +158,29 @@ can be tried out without touching the submodule pin: build the tag from a compil
 ## Testing and Linting
 
 ```bash
-make test              # cargo test
+make test              # cargo test --all-targets
+make coverage          # hand-written line coverage, gated at 100%
 make cargo_fmt_check   # rustfmt over the HAND-WRITTEN sources only
 make cargo_doc         # cargo doc --no-deps
 make precommit_hooks_run_all_files
 ```
 
+The suite under `tests/` exercises the **generated** stubs the way a broken generator would be
+noticed: messages are serialized and re-parsed field by field, enum discriminants are pinned, and
+the generated `Text2SpeechServer` is served over a loopback socket and driven by the generated
+`Text2SpeechClient`, so every declared RPC really is encoded, routed by its
+`/ondewo.t2s.Text2Speech/<Method>` path, answered and decoded again. No ONDEWO server is involved.
+
+`make coverage` measures the **hand-written** sources only - `src/api`, `tests/` and `examples/`
+are excluded, because generated code is machine output rather than authored logic - and fails
+below 100%. The same gate runs in CI. The generated stubs are deliberately not held to a coverage
+number; they are covered by the behavioural tests above.
+
 `src/api` is outside the rustfmt gate on purpose: it is written by the generator on every run, so
-a formatter that rewrote it would only produce a diff that the next generation discards.
+a formatter that rewrote it would only produce a diff that the next generation discards. Doctests
+are off crate-wide (`doctest = false`): the protos document their RPCs with indented proto and
+HTTP snippets that prost copies into doc comments and rustdoc then tries to compile as rust. The
+hand-written usage snippet therefore lives in `examples/`, where `cargo test` still compiles it.
 
 ## Release
 

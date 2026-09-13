@@ -13,7 +13,7 @@
 # the Makefile - do not edit it by hand.
 [package]
 name = "ondewo-t2s-client"
-version = "0.1.0"
+version = "6.6.0"
 edition = "2021"
 rust-version = "1.88"
 description = "ONDEWO T2S (Text-to-Speech) gRPC client library, generated from the ondewo-t2s-api protocol buffer definitions"
@@ -38,6 +38,12 @@ exclude = [
 
 [lib]
 path = "src/lib.rs"
+# The ONDEWO protos document their RPCs with INDENTED blocks (proto snippets, HTTP mappings), and
+# prost copies those comments verbatim into doc comments. rustdoc reads an indented block as a rust
+# doctest, so `cargo test` tries to compile them and fails. Nothing in src/api is a runnable
+# example, so doctests are off for the library; the hand-written usage snippet lives in examples/
+# instead, where `cargo test` still compiles it.
+doctest = false
 
 [dependencies]
 prost = "0.14"
@@ -46,3 +52,11 @@ prost-types = "0.14"
 # `tonic_prost::ProstCodec`; without tonic-prost every generated service fails to resolve.
 tonic = { version = "0.14", features = ["tls-ring", "gzip"] }
 tonic-prost = "0.14"
+
+# Test-only. The integration suite serves the GENERATED server trait over a real loopback
+# socket and calls it with the GENERATED client, which needs an async runtime. Both crates are
+# already in the compiler image's pre-warmed cache (see prewarm-Cargo.toml), so adding them
+# keeps the fully offline `make generate_ondewo_protos` round trip working.
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["net"] }

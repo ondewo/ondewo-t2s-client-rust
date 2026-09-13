@@ -1,8 +1,10 @@
 name: ci
 
-# The generated stubs under src/api are committed, so CI compiles the crate straight from the
-# checkout: it needs neither docker, nor the ondewo-rust-proto-compiler image, nor the
-# ondewo-t2s-api submodule. Regeneration is an integration concern - run `make build` locally.
+# The generated stubs under src/api are COMMITTED, so CI compiles and tests the crate straight
+# from the checkout: it needs neither docker, nor the ondewo-rust-proto-compiler image, nor the
+# ondewo-t2s-api submodule. Regenerating the stubs is an integration concern - run `make build`
+# locally. Every step below therefore runs unconditionally: nothing here is allowed to skip
+# itself into a green run, and the first job asserts the stubs are actually present.
 on:
   push:
     branches: ["**"]
@@ -12,15 +14,33 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+  # Files kept OUT of the coverage metric: src/api is machine output (it is exercised by the
+  # tests, but it is not authored logic), and tests/ + examples/ are the measuring instrument.
+  # What remains is exactly the hand-written library surface.
+  COVERAGE_EXCLUDE_REGEX: (^|/)(src/api/|tests/|examples/)
+  # Hand-written code is small and entirely ours, so nothing less than complete is acceptable.
+  COVERAGE_MIN_LINES: "100"
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
+
+      # Fail loudly rather than compile an empty crate: without this, a lost or unmerged src/api
+      # turns every step below into a no-op that still exits 0.
+      - name: Assert the generated stubs are committed
+        run: |
+          test -f src/api/mod.rs || { echo "::error::src/api/mod.rs is missing - the generated stubs are not committed"; exit 1; }
+          stub_count=$(find src/api -name '*.rs' | grep -c . || true)
+          test "$stub_count" -ge 2 || { echo "::error::src/api holds $stub_count rust files - the generated stubs are not committed"; exit 1; }
+          echo "Found $stub_count generated rust files under src/api"
 
       - name: Install the rust toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup toolchain install stable --profile minimal --component rustfmt
           rustup default stable
           rustc --version && cargo --version
 
@@ -31,21 +51,26 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-build-
 
-      # src/api is written by the proto compiler, not by hand: it is formatted by the
-      # generator and is deliberately outside the rustfmt gate. `-exec ... +` runs nothing
-      # (and exits 0) when the crate has no hand-written module besides src/lib.rs.
+      # src/api is written by the proto compiler, not by hand: it is formatted by the generator
+      # and is deliberately outside the rustfmt gate. The file count is asserted so that a future
+      # path change cannot turn `-exec ... +` into a silent no-op.
       - name: Check the formatting of the hand-written sources
-        run: find src -name '*.rs' -not -path 'src/api/*' -exec rustfmt --check --edition 2021 {} +
+        run: |
+          hand_written=$(find src tests examples -name '*.rs' -not -path 'src/api/*' | grep -c . || true)
+          test "$hand_written" -ge 1 || { echo "::error::found no hand-written rust sources to format-check"; exit 1; }
+          echo "Format-checking $hand_written hand-written rust files"
+          find src tests examples -name '*.rs' -not -path 'src/api/*' -exec rustfmt --check --edition 2021 {} +
 
       - name: Build
         run: cargo build --release
 
+      # --all-targets also compiles examples/, which carry the crate's usage snippets.
       - name: Test
-        run: cargo test
+        run: cargo test --all-targets
 
       # The generated doc comments carry raw URLs and raw HTML from the proto comments; the
       # crate-level allows in src/lib.rs are what keep this green.
@@ -55,10 +80,60 @@ jobs:
       - name: Verify the crate packages cleanly
         run: cargo package --no-verify --allow-dirty
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component llvm-tools-preview
+          rustup default stable
+          rustc --version && cargo --version
+
+      - name: Cache the cargo registry and the build directory
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-coverage-
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      # --fail-under-lines is the gate: the build goes red the moment hand-written coverage drops
+      # below COVERAGE_MIN_LINES.
+      - name: Measure the coverage of the hand-written sources
+        # `shell: bash` is what turns on pipefail - the default `bash -e` would let `tee` swallow
+        # a failing --fail-under-lines and report the step as green.
+        shell: bash
+        run: |
+          cargo llvm-cov --summary-only \
+            --ignore-filename-regex "$COVERAGE_EXCLUDE_REGEX" \
+            --fail-under-lines "$COVERAGE_MIN_LINES" \
+            | tee coverage-summary.txt
+
+      # A regex that accidentally excluded everything would leave an empty report that
+      # --fail-under-lines happily accepts, so assert the hand-written sources were measured.
+      - name: Assert the hand-written sources were actually measured
+        run: |
+          grep -q 'auth\.rs' coverage-summary.txt || { echo "::error::the coverage report did not include the hand-written sources"; exit 1; }
+
+      # The generated stubs are excluded from the metric but must still be exercised; this run
+      # records how much of them the suite touches, without gating on it.
+      - name: Report the coverage of the generated stubs (not gated)
+        run: |
+          cargo llvm-cov --summary-only --no-run --ignore-filename-regex '(^|/)(tests/|examples/)'
+
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:

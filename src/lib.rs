@@ -18,6 +18,11 @@
 #![allow(rustdoc::bare_urls)]
 #![allow(rustdoc::broken_intra_doc_links)]
 #![allow(rustdoc::invalid_html_tags)]
+// The protos also document RPCs with INDENTED blocks (proto snippets, HTTP mappings). rustdoc
+// reads an indented block as a rust code block, so it warns here and would try to compile them as
+// doctests - which is why `Cargo.toml` sets `doctest = false` for this crate.
+#![allow(rustdoc::invalid_rust_codeblocks)]
 
 pub mod api;
+pub mod auth;
 pub use api::*;

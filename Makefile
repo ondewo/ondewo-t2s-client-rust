@@ -59,6 +59,12 @@ ONDEWO_PROTOS_TARGET_DIR=ondewo
 # Staging directory that is handed to the image as /input-volume (see generate_ondewo_protos)
 PROTO_INPUT_DIR=.proto-input
 
+# Coverage gate - KEEP IN SYNC with .github/workflows/ci.yml, which runs the same two values.
+# Excluded from the metric: the generated stubs (machine output, not authored logic) and the
+# tests/examples themselves (the measuring instrument).
+COVERAGE_EXCLUDE_REGEX=(^|/)(src/api/|tests/|examples/)
+COVERAGE_MIN_LINES=100
+
 # You need to setup an access token at https://github.com/settings/tokens - permissions are important
 GITHUB_GH_TOKEN?=ENTER_YOUR_TOKEN_HERE
 # You need to setup an API token at https://crates.io/settings/tokens
@@ -181,8 +187,17 @@ update_cargo_version: ## Update Version in Cargo.toml
 cargo_build: ## Compile the crate in release mode
 	cargo build --release
 
-test: ## Run the test suite
-	cargo test
+test: ## Run the test suite (--all-targets also compiles examples/)
+	cargo test --all-targets
+
+coverage: ## Line coverage of the HAND-WRITTEN sources, gated at COVERAGE_MIN_LINES (as in CI)
+# src/api is machine output and tests/ + examples/ are the measuring instrument, so neither
+# belongs in the metric - what remains is exactly the hand-written library surface. The generated
+# stubs are still exercised, by the behavioural tests under tests/.
+	@command -v cargo-llvm-cov >/dev/null 2>&1 || { echo "$(RED)[ERROR]$(NC) cargo-llvm-cov is missing - install it with 'cargo install cargo-llvm-cov --locked'"; exit 1; }
+	cargo llvm-cov --summary-only \
+		--ignore-filename-regex '${COVERAGE_EXCLUDE_REGEX}' \
+		--fail-under-lines ${COVERAGE_MIN_LINES}
 
 cargo_fmt: ## Format the hand-written sources (src/api is generated and never hand-formatted)
 	find src -name "*.rs" -not -path "src/api/*" -exec rustfmt --edition 2021 {} +
