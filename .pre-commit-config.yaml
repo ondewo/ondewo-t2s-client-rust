@@ -1,0 +1,51 @@
+#############################################################################################
+# pre-commit - language-agnostic hooks only. Rust linting and formatting stay with the        #
+# toolchain (`make cargo_fmt_check`, `cargo clippy`, `make test`) and with the CI workflow,   #
+# because rustfmt must never touch the generated stubs under src/. Ruff/mypy/uv are           #
+# python-only and are NOT included here.                                                      #
+# see https://pre-commit.com/#intro for an introduction to pre-commit                         #
+#############################################################################################
+
+# Never touch generated or vendored code. src/api is written by the ondewo-rust-proto-compiler
+# image on every `make generate_ondewo_protos`, so a hook that rewrote it would produce a diff
+# that the next generation silently throws away. The two submodules carry their own hooks.
+exclude: '(^|/)(target|crate-dist|\.proto-input)/|^src/api/|^ondewo-t2s-api/|^ondewo-proto-compiler/'
+
+fail_fast: false
+# "fail_fast: false" means pre-commit continues to run hooks after the first failure
+
+repos:
+
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.23.0
+    hooks:
+      - id: markdownlint-cli2
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: [ --maxkb=1024 ]
+      - id: check-json
+      - id: check-yaml
+      - id: check-toml          # validates Cargo.toml - the gen_crate template of the image
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: detect-private-key
+      - id: check-executables-have-shebangs
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+
+  - repo: https://github.com/milin/giticket
+    rev: '1.92'
+    hooks:
+      - id: giticket
+        args: [ '--regex=(?:(?:feature|bugfix|support|hotfix)/)?(OND[0-9]{3}-[0-9]{1,5})[_-][\w-]+',
+                '--format=[{ticket}] {commit_msg}',
+                '--mode=regex_match' ]
+
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [ commit-msg ]

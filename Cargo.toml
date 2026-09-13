@@ -1,0 +1,48 @@
+# The crate manifest of the ONDEWO T2S rust client.
+#
+# It is ALSO the gen_crate template of the ondewo-rust-proto-compiler image: `make
+# generate_ondewo_protos` mounts it into the container, protoc-gen-prost-crate copies it
+# verbatim (no_features) to the generated crate, and the orchestrator copies it back here.
+# A round trip therefore leaves this file unchanged - but every dependency named below has
+# to exist in the image's pre-warmed cargo cache, because generation runs fully offline
+# (CARGO_NET_OFFLINE=true + `cargo build --offline`). Adding one means adding it to
+# ondewo-proto-compiler/rust/image-data/default-lib-files/prewarm-Cargo.toml and rebuilding
+# the image; the build otherwise fails loudly in compile-stubs-2-lib.sh's pre-flight.
+#
+# The version is set by `make update_cargo_version` from ONDEWO_T2S_VERSION in
+# the Makefile - do not edit it by hand.
+[package]
+name = "ondewo-t2s-client"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "ONDEWO T2S (Text-to-Speech) gRPC client library, generated from the ondewo-t2s-api protocol buffer definitions"
+authors = ["ONDEWO GmbH <office@ondewo.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/ondewo/ondewo-t2s-client-rust"
+homepage = "https://ondewo.com"
+documentation = "https://docs.rs/ondewo-t2s-client"
+readme = "README.md"
+keywords = ["ondewo", "grpc", "tonic", "protobuf", "t2s"]
+categories = ["api-bindings", "network-programming"]
+
+# Keep the published crate to the library itself: the two submodules are large, are not
+# needed to compile the stubs, and `cargo package` would otherwise pull them in.
+exclude = [
+  "ondewo-t2s-api/",
+  "ondewo-proto-compiler/",
+  "crate-dist/",
+  ".proto-input/",
+  ".github/",
+]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+prost = "0.14"
+prost-types = "0.14"
+# Since tonic 0.14 the prost codec lives in its own crate and protoc-gen-tonic emits
+# `tonic_prost::ProstCodec`; without tonic-prost every generated service fails to resolve.
+tonic = { version = "0.14", features = ["tls-ring", "gzip"] }
+tonic-prost = "0.14"

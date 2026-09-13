@@ -1,0 +1,70 @@
+name: ci
+
+# The generated stubs under src/api are committed, so CI compiles the crate straight from the
+# checkout: it needs neither docker, nor the ondewo-rust-proto-compiler image, nor the
+# ondewo-t2s-api submodule. Regeneration is an integration concern - run `make build` locally.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+          rustc --version && cargo --version
+
+      - name: Cache the cargo registry and the build directory
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # src/api is written by the proto compiler, not by hand: it is formatted by the
+      # generator and is deliberately outside the rustfmt gate. `-exec ... +` runs nothing
+      # (and exits 0) when the crate has no hand-written module besides src/lib.rs.
+      - name: Check the formatting of the hand-written sources
+        run: find src -name '*.rs' -not -path 'src/api/*' -exec rustfmt --check --edition 2021 {} +
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Test
+        run: cargo test
+
+      # The generated doc comments carry raw URLs and raw HTML from the proto comments; the
+      # crate-level allows in src/lib.rs are what keep this green.
+      - name: Build the documentation
+        run: cargo doc --no-deps
+
+      - name: Verify the crate packages cleanly
+        run: cargo package --no-verify --allow-dirty
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # markdownlint-cli2 + the hygiene hooks from .pre-commit-config.yaml. The commit-msg
+      # hooks (giticket, conventional-pre-commit) are not part of `run --all-files`.
+      - name: Run the pre-commit hooks
+        uses: pre-commit/action@v3.0.1
