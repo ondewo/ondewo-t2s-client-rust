@@ -36,6 +36,17 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
 
+  # conventional-pre-commit MUST stay declared BEFORE giticket. Both run at the commit-msg stage
+  # and pre-commit runs them in declaration order. giticket rewrites the subject to
+  # "[OND221-2830] feat: …", which is no longer valid Conventional Commits, so with giticket
+  # first EVERY commit on a ticket branch fails this hook and can only land with --no-verify.
+  # Validate first, decorate second.
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [ commit-msg ]
+
   - repo: https://github.com/milin/giticket
     rev: '1.92'
     hooks:
@@ -43,9 +54,3 @@ repos:
         args: [ '--regex=(?:(?:feature|bugfix|support|hotfix)/)?(OND[0-9]{3}-[0-9]{1,5})[_-][\w-]+',
                 '--format=[{ticket}] {commit_msg}',
                 '--mode=regex_match' ]
-
-  - repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v4.4.0
-    hooks:
-      - id: conventional-pre-commit
-        stages: [ commit-msg ]

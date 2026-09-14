@@ -247,3 +247,7 @@ make publish_crate_dry_run    # + the file list, a full package/verify build, th
 
 Reach out to the ONDEWO team at [office@ondewo.com](mailto:office@ondewo.com), or open an issue in
 this repository. Contributions are welcome - see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).

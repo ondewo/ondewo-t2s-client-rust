@@ -37,7 +37,7 @@ ONDEWO_T2S_VERSION=6.6.0
 # Submodule pins - `make checkout_defined_submodule_versions` checks out exactly these.
 # Pin the API to `tags/<api version>` before cutting a release; a branch is for development only.
 ONDEWO_T2S_API_GIT_BRANCH=tags/6.6.0
-ONDEWO_PROTO_COMPILER_GIT_BRANCH=tags/5.15.0
+ONDEWO_PROTO_COMPILER_GIT_BRANCH=tags/5.15.1
 
 # Submodule directories - these MUST match the paths in .gitmodules
 ONDEWO_T2S_API_DIR=ondewo-t2s-api
@@ -121,7 +121,7 @@ makefile_chapters: ## Shows all sections of Makefile
 
 TEST: ## Prints some important variables
 	@echo "Release Notes: \n \n$(CURRENT_RELEASE_NOTES)"
-	@echo "GH Token: \t $(if $(GITHUB_GH_TOKEN),<set>,<unset>)"
+	@echo "GH Token: \t $(if $(filter-out ENTER_YOUR_TOKEN_HERE,$(GITHUB_GH_TOKEN)),<set>,<unset>)"
 	@echo "Cargo Token: \t $(if $(filter-out ENTER_HERE_YOUR_CARGO_REGISTRY_TOKEN,$(CARGO_REGISTRY_TOKEN)),<set>,<unset>)"
 	@echo "Compiler Image:  $(PROTO_COMPILER_IMAGE)"
 	@echo "Protos: \t $(ONDEWO_PROTOS_DIR)/$(ONDEWO_PROTOS_TARGET_DIR)"
@@ -236,8 +236,24 @@ checkout_defined_submodule_versions: ## Update submodule versions to the pins at
 ########################################################
 #		Release
 
+check_release_credentials: ## Fail loudly when the GitHub credential is unset or still a placeholder
+# Read through the SHELL ($$VAR - this Makefile exports everything), never through make ($(VAR)),
+# so the token is not interpolated into the recipe text and cannot reach the log.
+#
+# GITHUB_GH_TOKEN only: `release` deliberately does not upload to crates.io (release.yml does),
+# so demanding CARGO_REGISTRY_TOKEN here would fail a release for a credential it never uses.
+	@test -n "$$GITHUB_GH_TOKEN" -a "$$GITHUB_GH_TOKEN" != "ENTER_YOUR_TOKEN_HERE" || { echo "$(RED)[ERROR]$(NC) GITHUB_GH_TOKEN is not set - create one at https://github.com/settings/tokens, or run 'make ondewo_release', which reads it from ${DEVOPS_ACCOUNT_GIT}"; exit 1; }
+	@echo "$(GREEN)[SUCCESS]$(NC) GITHUB_GH_TOKEN is set"
+
 release: ## Automate the entire release process
 	@echo "Start Release"
+# Everything that can be refuted without touching origin is refuted FIRST. Both of these are
+# otherwise only reached by push_to_gh, the last step - after the release branch and the tag have
+# been pushed. A missing token would then leave an immovable tag on origin and `spc` would refuse
+# every retry, because that branch and that tag now exist; an empty notes slice would publish an
+# empty GitHub release instead of failing.
+	make check_release_credentials
+	make check_release_notes
 	make build
 	-make precommit_hooks_run_all_files
 	git status
@@ -282,10 +298,22 @@ create_release_tag: ## Create Release Tag and push it to origin
 push_to_gh: login_to_gh build_gh_release ## Logs into GitHub CLI and Releases
 	@echo 'Released to Github'
 
-login_to_gh: ## Login to Github CLI with Access Token
+login_to_gh: check_release_credentials ## Login to Github CLI with Access Token
 	@echo $(GITHUB_GH_TOKEN) | gh auth login -p ssh --with-token
 
-build_gh_release: ## Generate Github Release with CLI
+check_release_notes: ## Assert RELEASE.md carries an entry for ONDEWO_T2S_VERSION
+# `gh release create -n ""` succeeds and publishes an EMPTY release, so an entry that was
+# forgotten - or a heading whose wording drifted away from what CURRENT_RELEASE_NOTES greps for -
+# is otherwise only noticed by whoever reads the release page afterwards.
+	@notes="$(CURRENT_RELEASE_NOTES)"; \
+	if [ -z "$$notes" ]; then \
+		echo "$(RED)[ERROR]$(NC) RELEASE.md has no '## Release ONDEWO T2S Rust Client ${ONDEWO_T2S_VERSION}' entry"; \
+		echo "        The GitHub release would be created with empty notes - add the entry first."; \
+		exit 1; \
+	fi; \
+	echo "$(GREEN)[SUCCESS]$(NC) RELEASE.md has release notes for ${ONDEWO_T2S_VERSION}"
+
+build_gh_release: check_release_notes ## Generate Github Release with CLI
 	gh release create --repo $(GH_REPO) "$(ONDEWO_T2S_VERSION)" -n "$(CURRENT_RELEASE_NOTES)" -t "Release ${ONDEWO_T2S_VERSION}"
 
 ########################################################
