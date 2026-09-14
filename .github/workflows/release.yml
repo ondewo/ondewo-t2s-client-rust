@@ -1,0 +1,114 @@
+name: release
+
+# The crates.io upload of this repository. It is driven by the tag that `make create_release_tag`
+# pushes - a bare semver tag with no `v` prefix, the way the whole ONDEWO client fleet tags its
+# releases. `make release` deliberately stops after that tag push and does NOT upload: two
+# publishers for one version would race, and the loser dies on "crate version already uploaded".
+# `make ondewo_publish_crate` is the manual fallback for when this workflow cannot run.
+#
+# Everything here is an assertion first and an upload last. A missing secret, a tag that disagrees
+# with the manifest, or a crate that does not package must end as a RED run that names the cause -
+# never as a green run that published nothing.
+on:
+  push:
+    tags:
+      # GitHub's filter-pattern `+` is "one or more of the PRECEDING character", so `[0-9]+` is a
+      # run of digits - the same shape as the documented `v[12].[0-9]+.[0-9]+`. `[0-9]*` would be
+      # a digit followed by anything and would let `7abc.1.0` in. Quoted because a pattern
+      # containing `[` has to be.
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+# Never let two runs of the same tag publish at once.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish-crates-io:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # FIRST, before anything expensive. Without this the job would build for minutes and then
+      # hand cargo an empty token, which comes back as an opaque 403 from crates.io. A missing
+      # secret is an operator error and the only acceptable outcome is a red run that names it.
+      - name: Require the crates.io API token
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::error title=CARGO_REGISTRY_TOKEN is missing::The repository secret CARGO_REGISTRY_TOKEN is unset or empty, so nothing was published. Create an API token at https://crates.io/settings/tokens with the publish-new and publish-update scopes, then add it under Settings > Secrets and variables > Actions as CARGO_REGISTRY_TOKEN and re-run this workflow."
+            exit 1
+          fi
+          echo "CARGO_REGISTRY_TOKEN is present"
+
+      # The tag is the version a consumer will `cargo add`. If it disagrees with the manifest, the
+      # upload would carry a different version than the release it was cut from - and crates.io
+      # would accept it, because it only ever sees Cargo.toml.
+      - name: Assert the tag matches the crate version
+        run: |
+          manifest_version=$(sed -n 's|^version = "\(.*\)"|\1|p' Cargo.toml | head -n 1)
+          test -n "$manifest_version" || { echo "::error::could not read a version out of Cargo.toml"; exit 1; }
+          if [ "$GITHUB_REF_NAME" != "$manifest_version" ]; then
+            echo "::error title=Tag and manifest disagree::Tag $GITHUB_REF_NAME does not match the Cargo.toml version $manifest_version, so nothing was published. Run 'make update_cargo_version', commit, and re-tag."
+            exit 1
+          fi
+          echo "Publishing ondewo-t2s-client $manifest_version from tag $GITHUB_REF_NAME"
+
+      # The generated stubs are committed and ARE the published library. Publishing a crate whose
+      # src/api never made it into the release commit would ship an empty client to crates.io,
+      # and crates.io versions are immutable - there is no taking it back.
+      - name: Assert the generated stubs are committed
+        run: |
+          test -f src/api/mod.rs || { echo "::error::src/api/mod.rs is missing - the generated stubs are not committed"; exit 1; }
+          stub_count=$(find src/api -name '*.rs' | grep -c . || true)
+          test "$stub_count" -ge 2 || { echo "::error::src/api holds $stub_count rust files - the generated stubs are not committed"; exit 1; }
+          echo "Found $stub_count generated rust files under src/api"
+
+      - name: Install the rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version && cargo --version
+
+      - name: Cache the cargo registry and the build directory
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      # ci.yml runs on branches, not on tags, so the tagged commit is compiled and tested here
+      # rather than trusted. --all-targets also compiles examples/.
+      #
+      # --locked is what turns a stale lockfile into a clear error here instead of an opaque one at
+      # the very end: `make release` commits Cargo.lock alongside the version bump, and if that ever
+      # drifts, an unlocked build would silently rewrite the lockfile, leaving the tree dirty and
+      # `cargo publish` refusing to upload with no hint as to why.
+      - name: Build and test the tagged commit
+        run: |
+          cargo build --release --locked
+          cargo test --all-targets --locked
+
+      # The same credential-free gate ci.yml runs: the manifest fields crates.io requires, the
+      # file list, a full package + verify build, and the crates.io size limit.
+      - name: Verify the packaging path before uploading
+        run: make publish_crate_dry_run
+
+      # `make publish_crate` re-checks the manifest, refuses an unset token, and runs `cargo
+      # publish`, which reads CARGO_REGISTRY_TOKEN from the environment - so the token reaches
+      # neither a command line nor the log. This is the same target a human runs locally.
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: make publish_crate

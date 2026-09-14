@@ -23,7 +23,8 @@ export
 # 2 - Create Release Branch and push
 # 3 - Create Release Tag and push
 # 4 - GitHub Release
-# 5 - crates.io Release
+# 5 - crates.io Release - done by .github/workflows/release.yml, which the tag push in step 3
+#     triggers. `make ondewo_publish_crate` is the manual fallback.
 
 ########################################################
 # 		Variables
@@ -63,9 +64,14 @@ COVERAGE_MIN_LINES=100
 
 # You need to setup an access token at https://github.com/settings/tokens - permissions are important
 GITHUB_GH_TOKEN?=ENTER_YOUR_TOKEN_HERE
-# You need to setup an API token at https://crates.io/settings/tokens
-# `cargo publish` reads it from the environment, so it never appears on a command line.
-CARGO_REGISTRY_TOKEN?=ENTER_YOUR_TOKEN_HERE
+# You need to setup an API token at https://crates.io/settings/tokens, scoped to publish-new +
+# publish-update. `cargo publish` reads it from the environment (this Makefile `export`s every
+# variable), so it never appears on a command line and never reaches the build log.
+CARGO_REGISTRY_TOKEN?=ENTER_HERE_YOUR_CARGO_REGISTRY_TOKEN
+
+# crates.io refuses an upload whose .crate tarball is larger than this (10 MiB, the default limit).
+# The check is server-side, so `cargo publish --dry-run` cannot catch it - publish_crate_dry_run does.
+CRATE_MAX_BYTES=10485760
 
 # Terminate on the ***** separator that delimits release entries, NOT on /\*\*/ - that matches the
 # first markdown **bold** span inside the entry and silently truncates the notes there, with no
@@ -116,7 +122,7 @@ makefile_chapters: ## Shows all sections of Makefile
 TEST: ## Prints some important variables
 	@echo "Release Notes: \n \n$(CURRENT_RELEASE_NOTES)"
 	@echo "GH Token: \t $(if $(GITHUB_GH_TOKEN),<set>,<unset>)"
-	@echo "Cargo Token: \t $(if $(CARGO_REGISTRY_TOKEN),<set>,<unset>)"
+	@echo "Cargo Token: \t $(if $(filter-out ENTER_HERE_YOUR_CARGO_REGISTRY_TOKEN,$(CARGO_REGISTRY_TOKEN)),<set>,<unset>)"
 	@echo "Compiler Image:  $(PROTO_COMPILER_IMAGE)"
 	@echo "Protos: \t $(ONDEWO_PROTOS_DIR)/$(ONDEWO_PROTOS_TARGET_DIR)"
 
@@ -254,7 +260,12 @@ release: ## Automate the entire release process
 	make create_release_branch
 	make create_release_tag
 	make push_to_gh
-	make publish_crate
+# The crates.io upload deliberately does NOT happen here. Pushing the tag above starts
+# .github/workflows/release.yml, which publishes with the CARGO_REGISTRY_TOKEN repository secret;
+# a second publisher in this recipe would race it and the loser would die on "crate version
+# already uploaded". `make ondewo_publish_crate` is the manual path for when the workflow cannot
+# run (no secret yet, GitHub Actions unavailable, or a re-publish after a fixed workflow).
+	@echo "$(BLUE)[INFO]$(NC) Tag ${ONDEWO_T2S_VERSION} pushed - .github/workflows/release.yml publishes it to crates.io"
 	@echo "Release Finished"
 
 create_release_branch: ## Create Release Branch and push it to origin
@@ -280,11 +291,50 @@ build_gh_release: ## Generate Github Release with CLI
 ########################################################
 #		CRATES.IO
 
-publish_crate: ## Publish the crate to crates.io
-# cargo reads CARGO_REGISTRY_TOKEN from the environment (this Makefile exports it), so the
-# token never appears on a command line or in the build log.
-	@test "${CARGO_REGISTRY_TOKEN}" != "ENTER_YOUR_TOKEN_HERE" || { echo "$(RED)[ERROR]$(NC) CARGO_REGISTRY_TOKEN is not set - create one at https://crates.io/settings/tokens"; exit 1; }
-	@echo "$(BLUE)[INFO]$(NC) Publishing ondewo-t2s-client-rust ${ONDEWO_T2S_VERSION} to crates.io ..."
+check_crate_metadata: ## Assert Cargo.toml carries everything crates.io requires of a publishable crate
+# `cargo publish --dry-run` already rejects an empty description/license/repository and a missing
+# readme file, but it says nothing about keywords/categories (crates.io only recommends those) and
+# it cannot see the server-side size limit. Keeping the whole list in one credential-free target
+# means CI exercises every one of them on every push, instead of discovering them at release time.
+	@for field in description license repository readme; do \
+		grep -Eq "^$$field = \"[^\"]+\"" Cargo.toml || { echo "$(RED)[ERROR]$(NC) Cargo.toml carries no non-empty '$$field' - crates.io refuses the upload without it"; exit 1; }; \
+	done
+	@grep -Eq '^keywords = \[[^]]+\]' Cargo.toml || { echo "$(RED)[ERROR]$(NC) Cargo.toml carries no 'keywords' - the crate would be unfindable on crates.io"; exit 1; }
+	@grep -Eq '^categories = \[[^]]+\]' Cargo.toml || { echo "$(RED)[ERROR]$(NC) Cargo.toml carries no 'categories' - the crate would be unfindable on crates.io"; exit 1; }
+	@! grep -Eq '^[[:space:]]*publish[[:space:]]*=[[:space:]]*false' Cargo.toml || { echo "$(RED)[ERROR]$(NC) Cargo.toml sets 'publish = false' - the crate cannot be published at all"; exit 1; }
+	@readme=`sed -n 's|^readme = "\(.*\)"|\1|p' Cargo.toml | head -n 1`; \
+		test -s "$$readme" || { echo "$(RED)[ERROR]$(NC) the readme '$$readme' declared in Cargo.toml is missing or empty - crates.io renders it as the crate page"; exit 1; }
+	@echo "$(GREEN)[SUCCESS]$(NC) Cargo.toml carries every field crates.io requires"
+
+publish_crate_dry_run: check_crate_metadata ## Credential-free run of the whole packaging path, minus the upload (this is what CI runs)
+# Everything the crates.io release does except the upload itself, and none of it needs a token.
+# --allow-dirty throughout because this also runs over a working tree with freshly generated stubs;
+# the real publish_crate deliberately has no such flag and refuses a dirty tree.
+#
+# First the exact file list crates.io would receive. The readme needs no assertion here: cargo
+# always packages the file named by `readme`, even against an exclude entry, and
+# check_crate_metadata has already proven that file exists and is non-empty.
+	@echo "$(BLUE)[INFO]$(NC) Files that would be published:"
+	cargo package --list --allow-dirty
+# `cargo publish --dry-run` builds its tarball in a scratch directory and does not leave it behind,
+# so the size limit is measured on the one `cargo package` writes. --no-verify keeps this step to
+# the tarball alone (seconds); the compile that proves the packaged copy builds is the dry run below.
+	cargo package --no-verify --allow-dirty
+# Name the tarball from the manifest rather than globbing target/package: a cached build directory
+# can still hold the .crate of an earlier version, and a glob would happily measure that one.
+	@crate_file="target/package/`sed -n 's|^name = "\(.*\)"|\1|p' Cargo.toml | head -n 1`-`sed -n 's|^version = "\(.*\)"|\1|p' Cargo.toml | head -n 1`.crate"; \
+		test -f "$$crate_file" || { echo "$(RED)[ERROR]$(NC) cargo package produced no $$crate_file"; exit 1; }; \
+		crate_bytes=`wc -c < "$$crate_file" | tr -d ' '`; \
+		test "$$crate_bytes" -le ${CRATE_MAX_BYTES} || { echo "$(RED)[ERROR]$(NC) $$crate_file is $$crate_bytes bytes, over the crates.io limit of ${CRATE_MAX_BYTES} - trim Cargo.toml's exclude list"; exit 1; }; \
+		echo "$(GREEN)[SUCCESS]$(NC) $$crate_file is $$crate_bytes bytes (crates.io limit: ${CRATE_MAX_BYTES})"
+	cargo publish --dry-run --allow-dirty
+
+publish_crate: check_crate_metadata ## Publish the crate to crates.io (needs CARGO_REGISTRY_TOKEN)
+# cargo reads CARGO_REGISTRY_TOKEN from the environment (this Makefile exports it), so the token
+# never appears on a command line or in the build log. The guard below reads it through the SHELL
+# ($$VAR), not through make ($(VAR)), so the token is not interpolated into the recipe text either.
+	@test -n "$$CARGO_REGISTRY_TOKEN" -a "$$CARGO_REGISTRY_TOKEN" != "ENTER_HERE_YOUR_CARGO_REGISTRY_TOKEN" || { echo "$(RED)[ERROR]$(NC) CARGO_REGISTRY_TOKEN is not set - create one at https://crates.io/settings/tokens, or run 'make ondewo_publish_crate' to take it from the devops-accounts repo"; exit 1; }
+	@echo "$(BLUE)[INFO]$(NC) Publishing ondewo-t2s-client ${ONDEWO_T2S_VERSION} to crates.io ..."
 	cargo publish
 	@echo "$(GREEN)[SUCCESS]$(NC) Published to crates.io"
 
@@ -297,13 +347,24 @@ package_crate: ## Package the crate locally (the same artifact `make publish_cra
 ondewo_release: spc clone_devops_accounts run_release_with_devops ## Release with credentials from devops-accounts repo
 	@rm -rf ${DEVOPS_ACCOUNT_GIT}
 
+ondewo_publish_crate: clone_devops_accounts run_publish_crate_with_devops ## Publish to crates.io with the token from the devops-accounts repo
+	@rm -rf ${DEVOPS_ACCOUNT_GIT}
+
 clone_devops_accounts: ## Clones devops-accounts repo
 	if [ -d $(DEVOPS_ACCOUNT_GIT) ]; then rm -Rf $(DEVOPS_ACCOUNT_GIT); fi
 	git clone git@bitbucket.org:ondewo/${DEVOPS_ACCOUNT_GIT}.git
 
 run_release_with_devops: ## Gets Credentials from devops-repo and run release command with them
-	$(eval info:= $(shell cat ${DEVOPS_ACCOUNT_DIR}/account_github.env | grep GITHUB_GH ; cat ${DEVOPS_ACCOUNT_DIR}/account_cargo.env 2>/dev/null | grep CARGO_REGISTRY_TOKEN))
+# Only the GitHub token: `release` no longer uploads to crates.io (the release workflow does), so
+# requiring account_cargo.env here would fail a release for a credential it does not use.
+	$(eval info:= $(shell cat ${DEVOPS_ACCOUNT_DIR}/account_github.env | grep GITHUB_GH))
 	@make release $(info)
+
+run_publish_crate_with_devops: ## Gets the crates.io token from the devops-repo and runs the publish with it
+# @-prefixed like every other line that carries a token: the expanded recipe line holds
+# CARGO_REGISTRY_TOKEN=<token>, so an echoed line would put the token straight into the log.
+	$(eval info:= $(shell cat ${DEVOPS_ACCOUNT_DIR}/account_cargo.env | grep CARGO_REGISTRY_TOKEN))
+	@make publish_crate $(info)
 
 spc: ## Checks if the Release Branch, Tag and crate version already exist
 	$(eval filtered_branches:= $(shell git branch --all | grep "release/${ONDEWO_T2S_VERSION}"))

@@ -77,8 +77,15 @@ jobs:
       - name: Build the documentation
         run: cargo doc --no-deps
 
-      - name: Verify the crate packages cleanly
-        run: cargo package --no-verify --allow-dirty
+      # The credential-free half of the crates.io release, run on every push so the packaging path
+      # can never rot unnoticed between releases: the manifest fields crates.io demands, the exact
+      # file list that would be uploaded, `cargo publish --dry-run` (which packages the crate and
+      # compiles the packaged copy from scratch, stopping right before the upload), and the
+      # server-side size limit that no dry run can see. The only thing left untested at release
+      # time is the upload itself. The same target is what .github/workflows/release.yml runs
+      # before it publishes.
+      - name: Verify the crate publishes cleanly (dry run, no credentials)
+        run: make publish_crate_dry_run
 
   coverage:
     runs-on: ubuntu-latest

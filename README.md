@@ -33,7 +33,11 @@ service clients that this crate publishes.
 
 ## Rust Installation
 
-Add the crate to your project:
+The library is published to [crates.io](https://crates.io/crates/ondewo-t2s-client) as
+**`ondewo-t2s-client`**, with the API documentation on
+[docs.rs](https://docs.rs/ondewo-t2s-client). Nothing else is needed to consume it - the stubs are
+generated before publishing and ship inside the crate, so installing it needs neither `docker`,
+nor `protoc`, nor the proto definitions.
 
 ```bash
 cargo add ondewo-t2s-client
@@ -50,6 +54,16 @@ tokio = { version = "1", features = ["full"] }
 
 The generated clients are `async`, so an async runtime is needed to drive them -
 [tokio](https://crates.io/crates/tokio) is the one tonic is built against.
+
+A few things worth knowing before pinning a version:
+
+* The crate needs **rust 1.88 or newer** (`rust-version` in `Cargo.toml`).
+* Its version tracks the **ONDEWO T2S API** it was generated from in major and minor - a crate
+  `X.Y.*` speaks the API `X.Y.*` - so pin the minor of the server you talk to.
+* `tonic` and `prost` types appear in the public API. Depend on the **same `tonic` 0.14 and
+  `prost` 0.14** the crate does, or the two sets of types will not line up.
+* The crate ships no default features and pulls in `tonic`'s `tls-ring` and `gzip`, so a TLS
+  endpoint (`https://`) works out of the box.
 
 To work on the library itself, clone it with its two submodules and set up the toolchain:
 
@@ -193,7 +207,41 @@ make ondewo_release
 
 which checks that the release branch and tag do not exist yet (`spc`), pulls the credentials from
 the `ondewo-devops-accounts` repository and runs `make release` with them: build, commit, release
-branch, release tag, GitHub release and the crates.io publish.
+branch, release tag and the GitHub release.
+
+### Publishing to crates.io
+
+The upload is **not** done by `make release`. Pushing the release tag starts
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which asserts that the tag
+matches the version in `Cargo.toml` and that the generated stubs are committed, builds and tests
+the tagged commit, re-runs the packaging dry run and only then runs `make publish_crate` with the
+`CARGO_REGISTRY_TOKEN` repository secret. Keeping the single upload there is deliberate: a second
+publisher inside `make release` would race the workflow, and the loser would die on *crate version
+already uploaded*.
+
+The workflow refuses to start work when the secret is unset, rather than reaching the upload with
+an empty token, so a missing credential is a red run that names it and not a green run that
+published nothing. Two operator tasks are therefore one-time prerequisites:
+
+* an API token from <https://crates.io/settings/tokens> with the **publish-new** and
+  **publish-update** scopes, stored as the repository secret `CARGO_REGISTRY_TOKEN` under
+  *Settings → Secrets and variables → Actions*,
+* the same token in `account_cargo.env` of the `ondewo-devops-accounts` repository, which is what
+  the manual fallback reads.
+
+That fallback is:
+
+```bash
+make ondewo_publish_crate   # clones devops-accounts, runs publish_crate with the token from it
+```
+
+Everything about the release except the upload itself is exercised without any credential, both
+locally and on every CI push:
+
+```bash
+make check_crate_metadata     # the manifest fields crates.io requires
+make publish_crate_dry_run    # + the file list, a full package/verify build, the 10 MiB limit
+```
 
 ## Support
 
