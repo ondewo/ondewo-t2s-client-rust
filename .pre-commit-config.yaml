@@ -36,6 +36,20 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
 
+  # strip-ticket-prefix MUST stay first of the three commit-msg hooks. It removes a
+  # `[OND221-2830] ` that a PREVIOUS run added, so conventional-pre-commit judges the
+  # developer's own subject on an amend/reword instead of the decorated one, and giticket
+  # applies the ticket exactly once. Without it `git commit --amend` on a ticket branch is
+  # rejected, and giticket's own idempotency guard never fires (its branch regex demands a
+  # `-` or `_` after the ticket; the `]` of an existing prefix is neither).
+  - repo: local
+    hooks:
+      - id: strip-ticket-prefix
+        name: strip a previously applied [TICKET] prefix
+        entry: .hooks/strip-ticket-prefix.py
+        language: python
+        stages: [ commit-msg ]
+
   # conventional-pre-commit MUST stay declared BEFORE giticket. Both run at the commit-msg stage
   # and pre-commit runs them in declaration order. giticket rewrites the subject to
   # "[OND221-2830] feat: …", which is no longer valid Conventional Commits, so with giticket
