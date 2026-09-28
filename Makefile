@@ -37,7 +37,7 @@ ONDEWO_T2S_VERSION=6.6.0
 # Submodule pins - `make checkout_defined_submodule_versions` checks out exactly these.
 # Pin the API to `tags/<api version>` before cutting a release; a branch is for development only.
 ONDEWO_T2S_API_GIT_BRANCH=tags/6.6.0
-ONDEWO_PROTO_COMPILER_GIT_BRANCH=tags/5.15.1
+ONDEWO_PROTO_COMPILER_GIT_BRANCH=tags/5.15.2
 
 # Submodule directories - these MUST match the paths in .gitmodules
 ONDEWO_T2S_API_DIR=ondewo-t2s-api
