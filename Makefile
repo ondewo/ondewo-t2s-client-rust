@@ -37,7 +37,10 @@ ONDEWO_T2S_VERSION=6.6.0
 # Submodule pins - `make checkout_defined_submodule_versions` checks out exactly these.
 # Pin the API to `tags/<api version>` before cutting a release; a branch is for development only.
 ONDEWO_T2S_API_GIT_BRANCH=tags/6.6.0
-ONDEWO_PROTO_COMPILER_GIT_BRANCH=tags/5.15.2
+# The compiler has to be 5.15.4 or newer: 5.15.4 pre-warms tonic tls-native-roots, which
+# src/channel.rs needs, and an image older than 5.15.2 builds its crate without the README.md
+# that Cargo.toml's `readme` names (generate_ondewo_protos stages it).
+ONDEWO_PROTO_COMPILER_GIT_BRANCH=tags/5.15.4
 
 # Submodule directories - these MUST match the paths in .gitmodules
 ONDEWO_T2S_API_DIR=ondewo-t2s-api
@@ -159,11 +162,12 @@ generate_ondewo_protos: ## Generate rust code from proto files into src/api
 # The image COPIES the whole mounted input volume into itself before it compiles, so the repo
 # root is deliberately not the input volume: it carries target/ (gigabytes after a release
 # build) and .git. Stage exactly what the image consumes instead - the protos, the crate
-# manifest and the hand-written sources. src/api is left out on purpose: it is entirely
+# manifest, the README.md its `readme` names (the image's `cargo package` refuses the crate
+# without it) and the hand-written sources. src/api is left out on purpose: it is entirely
 # generated, and the image wipes it in the output volume before copying the new stubs back.
 	rm -rf ${PROTO_INPUT_DIR}
 	mkdir -p ${PROTO_INPUT_DIR}/src
-	cp Cargo.toml ${PROTO_INPUT_DIR}/Cargo.toml
+	cp Cargo.toml README.md ${PROTO_INPUT_DIR}/
 	find src -mindepth 1 -maxdepth 1 ! -name api -exec cp -R {} ${PROTO_INPUT_DIR}/src/ \;
 	cp -R ${ONDEWO_PROTOS_DIR} ${PROTO_INPUT_DIR}/${ONDEWO_PROTOS_DIR}
 # Same image tag and the same positional arguments as the compiler's own
