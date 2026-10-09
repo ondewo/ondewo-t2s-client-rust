@@ -50,8 +50,14 @@ prost = "0.14"
 prost-types = "0.14"
 # Since tonic 0.14 the prost codec lives in its own crate and protoc-gen-tonic emits
 # `tonic_prost::ProstCodec`; without tonic-prost every generated service fails to resolve.
-tonic = { version = "0.14", features = ["tls-ring", "gzip"] }
+# tls-native-roots: a TLS channel without a custom CA (grpc_cert) trusts the platform's
+# certificate store (src/channel.rs). It pulls in rustls-native-certs, which only the compiler
+# images built after ondewo-proto-compiler 5.15.3 pre-warm: an older image fails the offline
+# `make generate_ondewo_protos`.
+tonic = { version = "0.14", features = ["tls-ring", "tls-native-roots", "gzip"] }
 tonic-prost = "0.14"
+# The insecure-channel warning of src/channel.rs. Already a dependency of tonic.
+tracing = "0.1"
 
 # Test-only. The integration suite serves the GENERATED server trait over a real loopback
 # socket and calls it with the GENERATED client, which needs an async runtime. Both crates are
