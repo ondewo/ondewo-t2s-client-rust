@@ -62,8 +62,10 @@ A few things worth knowing before pinning a version:
   `X.Y.*` speaks the API `X.Y.*` - so pin the minor of the server you talk to.
 * `tonic` and `prost` types appear in the public API. Depend on the **same `tonic` 0.14 and
   `prost` 0.14** the crate does, or the two sets of types will not line up.
-* The crate ships no default features and pulls in `tonic`'s `tls-ring` and `gzip`, so a TLS
-  endpoint (`https://`) works out of the box.
+* The crate ships no default features and pulls in `tonic`'s `tls-ring`, `tls-native-roots` and
+  `gzip`, so a TLS endpoint (`https://`) works out of the box and trusts the platform's
+  certificate store unless you configure a CA - see
+  [TLS, mutual TLS and certificates](#tls-mutual-tls-and-certificates).
 
 To work on the library itself, clone it with its two submodules and set up the toolchain:
 
@@ -111,6 +113,139 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## TLS, mutual TLS and certificates
+
+gRPC encrypts with **TLS**. The hand-written module `channel` builds the tonic `Channel` from a
+`ClientConfig`, the same contract every ONDEWO SDK follows:
+
+| Mode | `use_secure_channel` | Config fields |
+| --- | --- | --- |
+| Plaintext (not for production) | `false` | none |
+| TLS, platform trust store | `true` (the default) | none |
+| TLS, custom CA | `true` | `grpc_cert` = PEM of the CA that signed the server certificate |
+| Mutual TLS | `true` | `grpc_cert` (or the platform store) plus `grpc_client_cert` and `grpc_client_key` |
+
+Rules the code enforces, all before tonic sees the config (`ChannelError`):
+
+* The three fields hold **PEM content**, **not file paths**. Read the files yourself. A certificate
+  field that holds no PEM certificate (typically a path) is refused with `NotAPemCertificate`.
+* `grpc_client_cert` and `grpc_client_key` go together: setting only one is refused with
+  `IncompleteClientIdentity`. Both empty means plain server-authenticated TLS.
+* `use_secure_channel = false` with a client certificate is refused with
+  `ClientIdentityWithoutTls` instead of silently dropping the identity. A plaintext channel logs a
+  `tracing` warning naming `host:port`; the crate never installs a subscriber or touches your
+  logging setup.
+* No error message and no `Debug` rendering contains a PEM or a key: certificates are rendered as
+  their length, a non-empty `grpc_client_key` as `***REDACTED***`, an empty one as `""`.
+* The server certificate must carry the host you connect to in its subject alternative names
+  (SAN). When you connect by IP and the certificate has no IP SAN, set `tls_domain_name` to a name
+  in the SAN (the counterpart of gRPC's `grpc.ssl_target_name_override`). A bare IPv6 literal host
+  (`::1`) is bracketed for you (`[::1]:50051`).
+
+```rust
+use std::fs;
+
+use ondewo_t2s_client::channel::{ClientConfig, MAX_MESSAGE_LENGTH};
+use ondewo_t2s_client::ondewo::t2s::*;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = ClientConfig::new("10.0.0.5", 50051)
+        .with_grpc_cert(fs::read_to_string("certs/ca.pem")?)
+        // leave this out for server-authenticated TLS
+        .with_client_identity(
+            fs::read_to_string("certs/client.pem")?,
+            fs::read_to_string("certs/client.key")?,
+        )
+        // only when connecting by IP to a certificate without that IP in its SAN
+        .with_tls_domain_name("t2s.example.internal");
+
+    let channel = config.connect().await?; // or config.connect_lazy()? - connects on the first call
+    // replace `Example` with a service of the API, as in Usage above
+    let mut client = example_client::ExampleClient::new(channel)
+        .max_decoding_message_size(MAX_MESSAGE_LENGTH)
+        .max_encoding_message_size(MAX_MESSAGE_LENGTH);
+    let response = client.example_rpc(ExampleRequest::default()).await?;
+    println!("{:?}", response.into_inner());
+    Ok(())
+}
+```
+
+One `Channel` serves every generated client: clone it (cheap) for each service, so all of them
+share one connection and one TLS handshake. `config.endpoint()?` returns the tonic `Endpoint`
+without connecting, for further tuning.
+
+### Channel defaults
+
+The python SDKs set gRPC core channel options; tonic exposes only some of them, so this crate
+sets what it can and leaves the rest to tonic's behaviour:
+
+| python option | here |
+| --- | --- |
+| `max_send/receive_message_length = 2**31-1` | per client, not per channel: pass `MAX_MESSAGE_LENGTH` to `max_decoding_message_size` / `max_encoding_message_size` (tonic's decoding default is 4 MiB) |
+| `keepalive_time_ms = 30000`, `keepalive_timeout_ms` / `http2.ping_timeout_ms = 20000`, `http2.max_pings_without_data = 2` | **not set**: hyper has no cap on pings without data, and a default grpc-core server answers a client that keeps pinging a silent stream with GOAWAY `too_many_pings`. Instead, TCP keepalive (`TCP_KEEPALIVE` 30 s, `TCP_KEEPALIVE_INTERVAL` 10 s, `TCP_KEEPALIVE_RETRIES` 2) detects a silently dropped idle connection |
+| `max_reconnect_backoff_ms = 5000` | not applicable: tonic reconnects on the next call, without an exponential backoff |
+| retry policy (idempotent methods only) | not applicable: tonic does not retry calls |
+
+### A test PKI with openssl
+
+A CA, a server certificate with SANs, and a client certificate with the `clientAuth` extended key
+usage. For tests only: the keys are unencrypted.
+
+```bash
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 365 \
+  -subj "/CN=Test CA" -keyout ca.key -out ca.pem
+
+printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > server.ext
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -subj "/CN=localhost" -keyout server.key -out server.csr
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 365 \
+  -extfile server.ext -out server.pem
+
+printf 'extendedKeyUsage=clientAuth\n' > client.ext
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -subj "/CN=my-client" -keyout client.key -out client.csr
+openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 365 \
+  -extfile client.ext -out client.pem
+
+chmod 600 *.key
+openssl verify -CAfile ca.pem server.pem client.pem
+```
+
+The client then uses `ca.pem` / `client.pem` / `client.key`; a server that requires client
+certificates uses `server.pem` / `server.key` and trusts `ca.pem` for its clients.
+`tests/tls_channel.rs` builds the same PKI at test time and runs real handshakes against an
+in-process tonic server.
+
+### TLS security notes
+
+* Keep the private key out of source control and out of images; load it from a file with mode
+  `0600` or from a secret store at startup.
+* `ClientConfig` has no serialization. If you persist one yourself, `grpc_client_key` is in it in
+  clear text: treat that file as a secret.
+* `Debug` redacts the key and renders no PEM, but still shows host, port and flags - log configs
+  only when that is acceptable.
+
+### TLS troubleshooting
+
+A failed handshake surfaces either from `connect()` as `ChannelError::Connect`, or, with
+`connect_lazy()`, as the `Status` of the first call:
+
+* **`invalid peer certificate: UnknownIssuer`** (`UNAVAILABLE`): `grpc_cert` is not the CA that
+  issued the server certificate, the server does not send its intermediate certificates, or - with
+  no `grpc_cert` - the platform store does not trust the server's CA.
+* **`certificate not valid for name "<host>"`** (`UNAVAILABLE`): the host you connect to is not in
+  the server certificate's SAN. Connect by a name in the SAN, add the SAN, or set
+  `tls_domain_name`.
+* **`received fatal alert: CertificateRequired`** (`UNKNOWN`, "transport error") against a server
+  that requires client certificates: no client certificate was presented. Set `grpc_client_cert`
+  and `grpc_client_key`.
+* **`received fatal alert: UnknownCA`** (`UNKNOWN`): the client certificate was issued by a CA
+  the server does not trust for its clients.
+* **`ChannelError::NotAPemCertificate`** / **`Error parsing TLS private key`**
+  (`ChannelError::InvalidEndpoint`): a field holds something that is not PEM, typically a file
+  path. Pass `fs::read_to_string(...)?` instead.
+
 ## Repository Structure
 
 ```text
@@ -123,13 +258,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 │   │   ├── ondewo.t2s.rs
 │   │   └── ondewo.t2s.tonic.rs
 │   ├── auth.rs               <----- hand-written bearer-token interceptor
+│   ├── channel.rs            <----- hand-written channel builder: TLS, mutual TLS, plaintext
 │   └── lib.rs                <----- hand-written crate barrel
 ├── examples
 │   └── authenticated_client.rs   <----- the crate's usage snippet, compiled by `cargo test`
 ├── tests                     <----- integration tests over the generated stubs
 │   ├── auth_interceptor.rs
 │   ├── generated_grpc.rs
-│   └── generated_messages.rs
+│   ├── generated_messages.rs
+│   ├── release_notes.rs      <----- pins the RELEASE.md slice the GitHub release body is cut from
+│   └── tls_channel.rs        <----- real TLS / mutual TLS handshakes with a test-time PKI
 ├── Cargo.toml                <----- crate manifest AND the generator's crate template
 ├── Cargo.lock
 ├── Makefile
@@ -184,6 +322,11 @@ noticed: messages are serialized and re-parsed field by field, enum discriminant
 the generated `Text2SpeechServer` is served over a loopback socket and driven by the generated
 `Text2SpeechClient`, so every declared RPC really is encoded, routed by its
 `/ondewo.t2s.Text2Speech/<Method>` path, answered and decoded again. No ONDEWO server is involved.
+
+`tests/tls_channel.rs` runs real TLS and mutual TLS handshakes against an in-process tonic
+server, with a throw-away PKI that the `openssl` CLI generates at test time - it has to be on
+`PATH` (it is on GitHub's ubuntu runners). `tests/release_notes.rs` pins the `RELEASE.md` slice
+that the GitHub release body is cut from.
 
 `make coverage` measures the **hand-written** sources only - `src/api`, `tests/` and `examples/`
 are excluded, because generated code is machine output rather than authored logic - and fails
