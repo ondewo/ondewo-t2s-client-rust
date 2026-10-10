@@ -303,7 +303,7 @@ push_to_gh: login_to_gh build_gh_release ## Logs into GitHub CLI and Releases
 	@echo 'Released to Github'
 
 login_to_gh: check_release_credentials ## Login to Github CLI with Access Token
-	@echo $(GITHUB_GH_TOKEN) | gh auth login -p ssh --with-token
+	@echo "$$GITHUB_GH_TOKEN" | gh auth login -p ssh --with-token
 
 check_release_notes: ## Assert RELEASE.md carries an entry for ONDEWO_T2S_VERSION
 # `gh release create -n ""` succeeds and publishes an EMPTY release, so an entry that was
@@ -389,14 +389,20 @@ clone_devops_accounts: ## Clones devops-accounts repo
 run_release_with_devops: ## Gets Credentials from devops-repo and run release command with them
 # Only the GitHub token: `release` no longer uploads to crates.io (the release workflow does), so
 # requiring account_cargo.env here would fail a release for a credential it does not use.
-	$(eval info:= $(shell cat ${DEVOPS_ACCOUNT_DIR}/account_github.env | grep GITHUB_GH))
-	@make release $(info)
+# Anchored grep, exported into the sub-make's ENVIRONMENT: `make release NAME=<value>` would put
+# the token on make's argv, which /proc/<pid>/cmdline shows to every user on the host.
+	@set -a \
+		&& eval "$$(grep -h -E '^(GITHUB_GH_TOKEN)=' ${DEVOPS_ACCOUNT_DIR}/account_github.env)" \
+		&& set +a \
+		&& make release
 
 run_publish_crate_with_devops: ## Gets the crates.io token from the devops-repo and runs the publish with it
-# @-prefixed like every other line that carries a token: the expanded recipe line holds
-# CARGO_REGISTRY_TOKEN=<token>, so an echoed line would put the token straight into the log.
-	$(eval info:= $(shell cat ${DEVOPS_ACCOUNT_DIR}/account_cargo.env | grep CARGO_REGISTRY_TOKEN))
-	@make publish_crate $(info)
+# Anchored grep, exported into the sub-make's ENVIRONMENT, so the token reaches neither make's
+# argv nor the log; cargo reads CARGO_REGISTRY_TOKEN from the environment.
+	@set -a \
+		&& eval "$$(grep -h -E '^(CARGO_REGISTRY_TOKEN)=' ${DEVOPS_ACCOUNT_DIR}/account_cargo.env)" \
+		&& set +a \
+		&& make publish_crate
 
 spc: ## Checks if the Release Branch, Tag and crate version already exist
 	$(eval filtered_branches:= $(shell git branch --all | grep "release/${ONDEWO_T2S_VERSION}"))
