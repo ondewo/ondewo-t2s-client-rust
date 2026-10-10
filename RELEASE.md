@@ -2,6 +2,43 @@
 
 *****************
 
+## Release ONDEWO T2S Rust Client 6.6.1
+
+### New Features
+
+* TLS, mutual TLS and plaintext channels: the new hand-written module `channel` builds the tonic
+  `Endpoint` / `Channel` from a `ClientConfig` (`endpoint()`, `connect()`, `connect_lazy()`).
+  `grpc_cert`, `grpc_client_cert` and `grpc_client_key` take PEM **content**, not file paths.
+  Without `grpc_cert` the platform trust store is used (tonic `tls-native-roots`).
+* Refused with a `ChannelError` before tonic sees the config: half a client identity
+  (`IncompleteClientIdentity`), a client identity on a plaintext channel
+  (`ClientIdentityWithoutTls`) and a certificate field that holds no PEM certificate
+  (`NotAPemCertificate`).
+* A plaintext channel logs a `tracing` warning naming `host:port`. `Debug` redacts the client key
+  and renders no PEM, and error messages name only the field and `host:port`. A bare IPv6 host is
+  bracketed, and `tls_domain_name` overrides the name the server certificate is checked against.
+* README section "TLS, mutual TLS and certificates": the modes, a test PKI built with openssl, TLS
+  security notes and the channel defaults. Of the python SDK channel options, the message size
+  limit is applied per client (`MAX_MESSAGE_LENGTH`); keepalive pings are not set (TCP keepalive
+  detects a dropped idle connection instead), and tonic has no reconnect backoff or retry policy.
+
+### Tests
+
+* `tests/tls_channel.rs` runs real handshakes against an in-process tonic server with an
+  openssl-generated test PKI: plain TLS, mutual TLS, missing and foreign client identities, wrong
+  CA, platform roots, CRLF PEMs, SAN override and IPv6 loopback.
+* `tests/release_notes.rs` pins the RELEASE.md slice the GitHub release body is cut from.
+
+### Build
+
+* `ondewo-proto-compiler` is pinned to 5.15.4 (5.15.2 before this release), which pre-warms tonic
+  `tls-native-roots` for the offline stub generation that `src/channel.rs` needs.
+  `make generate_ondewo_protos` now also stages `README.md`, which the image's `cargo package`
+  requires. The regenerated stubs under `src/api` are byte-identical.
+* Tracking API Version [6.6.0](https://github.com/ondewo/ondewo-t2s-api/releases/tag/6.6.0) (unchanged)
+
+*****************
+
 ## Release ONDEWO T2S Rust Client 6.6.0
 
 ### New Features

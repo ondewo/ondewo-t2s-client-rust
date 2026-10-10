@@ -13,7 +13,7 @@
 # the Makefile - do not edit it by hand.
 [package]
 name = "ondewo-t2s-client"
-version = "6.6.0"
+version = "6.6.1"
 edition = "2021"
 rust-version = "1.88"
 description = "ONDEWO T2S (Text-to-Speech) gRPC client library, generated from the ondewo-t2s-api protocol buffer definitions"
