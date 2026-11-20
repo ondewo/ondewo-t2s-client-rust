@@ -32,15 +32,15 @@ export
 
 # MUST BE THE SAME AS THE T2S API IN MAJOR AND MINOR VERSION NUMBER
 # example: API 2.9.0 --> Client 2.9.X
-ONDEWO_T2S_VERSION=6.6.1
+ONDEWO_T2S_VERSION=6.7.0
 
 # Submodule pins - `make checkout_defined_submodule_versions` checks out exactly these.
 # Pin the API to `tags/<api version>` before cutting a release; a branch is for development only.
-ONDEWO_T2S_API_GIT_BRANCH=tags/6.6.0
+ONDEWO_T2S_API_GIT_BRANCH=tags/6.7.0
 # The compiler has to be 5.15.4 or newer: 5.15.4 pre-warms tonic tls-native-roots, which
 # src/channel.rs needs, and an image older than 5.15.2 builds its crate without the README.md
 # that Cargo.toml's `readme` names (generate_ondewo_protos stages it).
-ONDEWO_PROTO_COMPILER_GIT_BRANCH=tags/5.16.0
+ONDEWO_PROTO_COMPILER_GIT_BRANCH=tags/5.17.0
 
 # Submodule directories - these MUST match the paths in .gitmodules
 ONDEWO_T2S_API_DIR=ondewo-t2s-api
