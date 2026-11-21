@@ -56,8 +56,21 @@ prost-types = "0.14.6"
 # `make generate_ondewo_protos`.
 tonic = { version = "0.14.9", features = ["tls-ring", "tls-native-roots", "gzip"] }
 tonic-prost = "0.14.9"
-# The insecure-channel warning of src/channel.rs. Already a dependency of tonic.
+# The insecure-channel warning of src/channel.rs and the Keycloak refresh warnings of
+# src/keycloak.rs. Already a dependency of tonic.
 tracing = "0.1"
+# The hand-written Keycloak token provider (src/keycloak.rs, src/keycloak/http_transport.rs).
+# Every one is already in the compiler image's pre-warmed cache: http, rustls, rustls-native-certs,
+# ring and tokio come in with tonic's tls-ring / tls-native-roots features, serde_json is warmed
+# explicitly. rustls is built WITHOUT its default features, which would pull in aws-lc-rs.
+http = "1"
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+serde_json = "1"
+# Only to call the blocking token refresh from a tonic interceptor without stalling a tokio
+# worker (tokio::task::block_in_place). Already a dependency of tonic.
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 
 # Test-only. The integration suite serves the GENERATED server trait over a real loopback
 # socket and calls it with the GENERATED client, which needs an async runtime. Both crates are

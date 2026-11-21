@@ -294,7 +294,7 @@ impl fmt::Debug for PemLength<'_> {
 }
 
 /// Renders a non-empty secret as [`REDACTED`] and an empty one as `""`.
-struct Redacted<'a>(&'a str);
+pub(crate) struct Redacted<'a>(pub(crate) &'a str);
 
 impl fmt::Debug for Redacted<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

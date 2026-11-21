@@ -139,6 +139,8 @@ jobs:
         run: |
           grep -q 'auth\.rs' coverage-summary.txt || { echo "::error::the coverage report did not include the hand-written sources"; exit 1; }
           grep -q 'channel\.rs' coverage-summary.txt || { echo "::error::the coverage report did not include src/channel.rs"; exit 1; }
+          grep -q 'keycloak\.rs' coverage-summary.txt || { echo "::error::the coverage report did not include src/keycloak.rs"; exit 1; }
+          grep -q 'http_transport\.rs' coverage-summary.txt || { echo "::error::the coverage report did not include src/keycloak/http_transport.rs"; exit 1; }
 
       # The generated stubs are excluded from the metric but must still be exercised; this run
       # records how much of them the suite touches, without gating on it.

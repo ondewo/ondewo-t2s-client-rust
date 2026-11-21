@@ -113,6 +113,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Keycloak authentication (password or offline token)
+
+The hand-written module `keycloak` acquires and auto-refreshes a Keycloak access token and attaches
+it as `authorization: Bearer <token>` to every call, through a tonic interceptor. It follows the
+same contract as every ONDEWO SDK:
+
+* **Offline token (recommended for many processes):** set `refresh_token` to a handed-off Keycloak
+  OFFLINE refresh token. The start-up is ONE `grant_type=refresh_token` exchange; no password grant
+  is ever sent, not even as a fallback. Keycloak's brute-force detection counts failed logins, so N
+  processes refreshing one offline token are fine where N password logins are refused.
+* **Password:** with `refresh_token` empty, the start-up is one password grant
+  (`scope=offline_access`) against the PUBLIC SDK client - no client secret exists or is sent.
+* A background thread refreshes the token 30 s before it expires, and every call re-checks it. A
+  failed refresh never stops the refreshing: it is retried with a jittered backoff from 5 s up to
+  300 s that every call shares, so an outage costs one token request per backoff step. A token that
+  is still valid keeps being served; only an EXPIRED token that cannot be refreshed fails a call,
+  with `Status::unauthenticated` carrying a `KeycloakAuthenticationError`.
+* One provider is shared per credential set (keyed by a SHA-256 of the credentials), so all clients
+  of one identity log in once. `token_expiration_in_s` bounds how long it keeps refreshing.
+* `KeycloakConfig`'s `Debug` output redacts the password and the refresh token; no error and no log
+  line carries a credential. `verify_ssl(false)` skips the certificate check of the token endpoint
+  only, for a self-signed local ingress.
+
+```rust
+use ondewo_t2s_client::api::ondewo::t2s::text2_speech_client::Text2SpeechClient;
+use ondewo_t2s_client::keycloak::{KeycloakConfig, KeycloakInterceptor};
+
+// Offline token: an empty password plus the handed-off refresh token.
+let config = KeycloakConfig::new(
+    "https://keycloak.example.com/auth",  // the part before /realms/<realm>
+    "ondewo-ccai-platform",
+    "ondewo-t2s-cai-sdk-public",
+    "technical-user@example.com",
+    "",                                   // or the password, for the password grant
+)
+.with_refresh_token(std::env::var("ONDEWO_T2S_OFFLINE_TOKEN")?);
+
+let interceptor = KeycloakInterceptor::new(&config)?; // validates, then acquires the first token
+let mut client = Text2SpeechClient::with_interceptor(channel, interceptor);
+```
+
+Without `keycloak_url`, `realm` and `client_id` the interceptor attaches nothing (plaintext server,
+or an ingress that injects auth); setting only some of the three, or Keycloak without a password or
+refresh token, is refused before any network I/O. `examples/keycloak_client.rs` is the whole flow.
+For a static token, `auth::BearerTokenInterceptor` still attaches one as it is.
+
 ## TLS, mutual TLS and certificates
 
 gRPC encrypts with **TLS**. The hand-written module `channel` builds the tonic `Channel` from a
